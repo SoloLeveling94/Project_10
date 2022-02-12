@@ -1,6 +1,7 @@
 from django.contrib.auth import logout
 from django.contrib.auth.models import User
 from django.core.exceptions import ValidationError
+from django.db.models import Q
 from django.shortcuts import get_object_or_404
 from rest_framework import generics, status
 from rest_framework.decorators import api_view
@@ -10,7 +11,7 @@ from rest_framework.viewsets import ModelViewSet
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from api_app.models import Project, Issue, Comment
-from api_app.permissions import IsProjectAuthorOrReadOnly, IsIssueAuthorOrReadOnly,\
+from api_app.permissions import IsProjectAuthorOrReadOnly, IsIssueAuthorOrReadOnly, \
     IsCommentAuthorOrReadOnly
 from api_app.serializers import RegistrationSerializer, ProjectSerializer, UserSerializer, \
     IssueSerializer, CommentSerializer
@@ -56,7 +57,8 @@ class ProjectViewSet(ModelViewSet):
     permission_classes = [IsProjectAuthorOrReadOnly]
 
     def get_queryset(self):
-        return Project.objects.filter(users=self.request.user.id)
+        return Project.objects.filter(Q(users=self.request.user.id) |
+                                      Q(author_user_id=self.request.user.id))
 
 
 class UserViewSet(ModelViewSet):
@@ -79,7 +81,7 @@ class UserViewSet(ModelViewSet):
         serializer = UserSerializer(user)
         return Response(serializer.data, status=HTTP_200_OK)
 
-    def create(self, request, project_pk, *args, ** kwargs):
+    def create(self, request, project_pk, *args, **kwargs):
         # Copy and manipulate the request
         data = self.request.data.copy()
         if not User.objects.filter(username=data['username']).exists():
@@ -104,12 +106,22 @@ class IssueViewSet(ModelViewSet):
     def create(self, request, *args, **kwargs):
         # Copy and manipulate the request
         data = self.request.data.copy()
-        data['assignee_user_id'] = data.get("assignee_user_id", request.user.id)
+        if not User.objects.filter(username=data['assignee_user']).exists():
+            raise ValidationError("L'utilisateur demandé n'existe pas.")
+        assignee_user = get_object_or_404(User, username=data['assignee_user'])
+        data['assignee_user_id'] = assignee_user.pk
+        project = Project.objects.get(pk=self.kwargs['project__pk'])
+        if not assignee_user in project.users.all():
+            raise ValidationError("L'utilisateur assigné n'appartient pas au projet.")
         serializer = self.get_serializer(data=data)
+
+        # if not serializer.is_valid():
+        #      raise ValidationError(serializer.errors)
+        #
+        # A cleaner way for writing the code above
         serializer.is_valid(raise_exception=True)
         self.perform_create(serializer)
-        headers = self.get_success_headers(serializer.data)
-        return Response(serializer.data, status=HTTP_200_OK, headers=headers)
+        return Response(serializer.data, status=HTTP_200_OK)
 
     def get_queryset(self):
         return Issue.objects.filter(project_id=self.kwargs['project__pk'])
